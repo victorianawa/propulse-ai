@@ -1,0 +1,286 @@
+{
+    "name": "WF1 - Weekly News Collection",
+    "nodes": [
+        {
+            "parameters": {
+                "rule": {
+                    "interval": [
+                        {
+                            "field": "weeks",
+                            "triggerAtDay": [
+                                1
+                            ],
+                            "triggerAtHour": 7
+                        }
+                    ]
+                }
+            },
+            "type": "n8n-nodes-base.scheduleTrigger",
+            "typeVersion": 1.4,
+            "position": [
+                0,
+                -64
+            ],
+            "id": "8bd18b11-0b92-427d-ad96-0ed4b40d89a1",
+            "name": "Schedule Trigger"
+        },
+        {
+            "parameters": {
+                "jsCode": "const TEST_BAD_FEED = false; // set true ONLY to test feed-failure handling\n\nconst q = (query) =>\n  `https://news.google.com/rss/search?q=${query}+when:7d&hl=id&gl=ID&ceid=ID:id`;\n\nconst feeds = [\n  { id: 'gn-market', name: 'Google News - Pasar Properti', url: q('pasar+properti+indonesia') },\n  { id: 'gn-kpr',    name: 'Google News - KPR',            url: q('KPR+suku+bunga+rumah') },\n  { id: 'gn-policy', name: 'Google News - Kebijakan',      url: q('FLPP+OR+Tapera+OR+subsidi+rumah+OR+%223+juta+rumah%22') },\n  { id: 'gn-first',  name: 'Google News - Rumah Pertama',  url: q('tips+beli+rumah+pertama') },\n  { id: 'gn-price',  name: 'Google News - Harga Rumah',    url: q('harga+rumah+properti+indonesia') },\n  { id: 'gn-infra',  name: 'Google News - Infrastruktur',  url: q('infrastruktur+kawasan+hunian') },\n];\n\nif (TEST_BAD_FEED) {\n  feeds.push({ id: 'bad', name: 'Deliberately Broken', url: 'https://invalid.example.invalid/rss.xml' });\n}\n\nreturn feeds.map(f => ({ json: f }));"
+            },
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                224,
+                32
+            ],
+            "id": "8124859c-3acf-4fc5-9f4e-b081575d657a",
+            "name": "Feed List"
+        },
+        {
+            "parameters": {},
+            "type": "n8n-nodes-base.manualTrigger",
+            "typeVersion": 1,
+            "position": [
+                0,
+                128
+            ],
+            "id": "562911bd-6567-46a1-a3c6-736655247ca8",
+            "name": "When clicking ‘Execute workflow’"
+        },
+        {
+            "parameters": {
+                "url": "={{ $json.url }}",
+                "options": {}
+            },
+            "type": "n8n-nodes-base.rssFeedRead",
+            "typeVersion": 1.2,
+            "position": [
+                432,
+                32
+            ],
+            "id": "008b917b-64cf-4fdc-a090-442ec71fce27",
+            "name": "RSS Read",
+            "onError": "continueRegularOutput"
+        },
+        {
+            "parameters": {
+                "jsCode": "const items = $input.all();\nconst stats = { raw: items.length, feed_errors: 0, missing_fields: 0 };\nconst out = [];\n\nconst stripHtml = (s) => String(s || '')\n  .replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')\n  .replace(/\\s+/g, ' ').trim();\n\nconst titleKey = (t) => t.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 80);\n\nconst hash = (s) => {\n  let h = 5381;\n  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;\n  return h.toString(16).padStart(8, '0');\n};\n\nfor (const it of items) {\n  const j = it.json;\n  if (j.error) { stats.feed_errors++; continue; }\n\n  const rawTitle = stripHtml(j.title);\n  const url = String(j.link || j.guid || '').trim();\n  if (!rawTitle || !url) { stats.missing_fields++; continue; }\n\n  let title = rawTitle;\n  let source = '';\n  const m = rawTitle.match(/^(.*)\\s-\\s([^-]+)$/);\n  if (m && url.includes('news.google.com')) { title = m[1].trim(); source = m[2].trim(); }\n  if (!source) { try { source = new URL(url).hostname.replace(/^www\\./, ''); } catch (e) { source = 'Unknown'; } }\n\n  const d = new Date(j.isoDate || j.pubDate || '');\n  const published_at = isNaN(d.getTime()) ? null : d.toISOString();\n\n  let description = stripHtml(j.contentSnippet || j.content || j.description || j.summary);\n  if (description.toLowerCase().startsWith(title.toLowerCase().slice(0, 30))) description = '';\n\n  const key = titleKey(title);\n  out.push({ json: {\n    article_id: hash(key),\n    title, url, source, published_at,\n    description: description.slice(0, 600),\n    title_key: key,\n    collected_at: new Date().toISOString(),\n  }});\n}\n\nout.forEach(o => { o.json._stats = stats; });\nreturn out.length ? out : [{ json: { _stats: stats, _empty: true } }];"
+            },
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                640,
+                32
+            ],
+            "id": "b467cec4-1d87-4441-8dce-c4b3228fc8fa",
+            "name": "Normalize Articles"
+        },
+        {
+            "parameters": {
+                "jsCode": "const MAX_AGE_DAYS = 7;\nconst MIN_SCORE = 2;\nconst now = Date.now();\n\nconst INCLUDE = ['properti','rumah','hunian','perumahan','apartemen','kpr','flpp','tapera',\n  'real estate','rusun','kavling','suku bunga','bank tanah','pengembang','developer',\n  'subsidi','kredit pemilikan','landed house','harga rumah','sewa rumah','kawasan hunian'];\n\nconst EXCLUDE = ['rumah sakit','rumah tangga','rumah makan','rumah ibadah','togel','judi',\n  'zodiak','ramalan','lowongan kerja','prediksi skor','tanah longsor','banjir bandang'];\n\nconst esc = (s) => s.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');\nconst has = (text, kw) => new RegExp('\\\\b' + esc(kw) + '\\\\b').test(text);\n\nreturn $input.all().map(({ json: a }) => {\n  if (a._empty) return { json: { ...a, keep: false, drop_reason: 'no_articles' } };\n\n  let drop_reason = null;\n\n  if (!a.published_at) {\n    drop_reason = 'missing_date';\n  } else {\n    const ageDays = (now - new Date(a.published_at).getTime()) / 86400000;\n    if (ageDays > MAX_AGE_DAYS) drop_reason = 'too_old';\n    else if (ageDays < -1) drop_reason = 'future_date';\n  }\n\n  const title = a.title.toLowerCase();\n  const desc = (a.description || '').toLowerCase();\n\n  if (!drop_reason) {\n    const bad = EXCLUDE.find(k => has(title, k) || has(desc, k));\n    if (bad) drop_reason = 'excluded_keyword:' + bad;\n  }\n\n  let score = 0; const matched = [];\n  if (!drop_reason) {\n    for (const k of INCLUDE) {\n      if (has(title, k)) { score += 2; matched.push(k); }\n      else if (has(desc, k)) { score += 1; matched.push(k); }\n    }\n    if (score < MIN_SCORE) drop_reason = 'irrelevant';\n  }\n\n  return { json: { ...a, relevance_score: score, matched_keywords: matched,\n                   keep: !drop_reason, drop_reason } };\n});"
+            },
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                848,
+                32
+            ],
+            "id": "50389b8c-94c2-4bd9-82cc-b3f4b968da5e",
+            "name": "Filter Recent & Relevant"
+        },
+        {
+            "parameters": {
+                "conditions": {
+                    "options": {
+                        "caseSensitive": true,
+                        "leftValue": "",
+                        "typeValidation": "strict",
+                        "version": 4
+                    },
+                    "conditions": [
+                        {
+                            "id": "257c6cf4-aec6-4382-85e8-1210b383339a",
+                            "leftValue": "={{ $json.keep }}",
+                            "rightValue": "",
+                            "operator": {
+                                "type": "boolean",
+                                "operation": "true",
+                                "singleValue": true
+                            }
+                        }
+                    ],
+                    "combinator": "and"
+                },
+                "options": {}
+            },
+            "type": "n8n-nodes-base.filter",
+            "typeVersion": 2.4,
+            "position": [
+                1040,
+                32
+            ],
+            "id": "1fc347c7-80d8-47cc-b0aa-e2a889614265",
+            "name": "Keep Only Kept"
+        },
+        {
+            "parameters": {
+                "jsCode": "const seenUrl = new Set();\nconst seenTitle = new Set();\nconst out = [];\n\nconst sorted = $input.all().sort((a, b) =>\n  new Date(b.json.published_at) - new Date(a.json.published_at));\n\nfor (const it of sorted) {\n  const { url, title_key } = it.json;\n  if (seenUrl.has(url) || seenTitle.has(title_key)) continue;\n  seenUrl.add(url); seenTitle.add(title_key);\n  out.push(it);\n}\nreturn out;"
+            },
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                1248,
+                32
+            ],
+            "id": "791a185a-6bb0-4625-b4ab-2533a0a986ae",
+            "name": "Dedup In-Run"
+        },
+        {
+            "parameters": {
+                "operation": "removeItemsSeenInPreviousExecutions",
+                "dedupeValue": "={{ $json.article_id }}",
+                "options": {}
+            },
+            "type": "n8n-nodes-base.removeDuplicates",
+            "typeVersion": 2,
+            "position": [
+                1424,
+                32
+            ],
+            "id": "089fe3c2-0341-4e9b-b53b-bf6e9c620373",
+            "name": "Remove Duplicates (Cross-Run)",
+            "alwaysOutputData": true
+        },
+        {
+            "parameters": {
+                "jsCode": "const safeAll = (name) => { try { return $(name).all(); } catch (e) { return []; } };\n\nconst normalized = safeAll('Normalize Articles');\nconst stats = (normalized[0] && normalized[0].json._stats) || {};\nconst filtered = safeAll('Filter Recent & Relevant');\nconst afterInRun = safeAll('Dedup In-Run');\nconst finalItems = $input.all().filter(i => i.json.article_id);\n\nconst dropReasons = {};\nfiltered.filter(i => !i.json.keep).forEach(i => {\n  const r = String(i.json.drop_reason).split(':')[0];\n  dropReasons[r] = (dropReasons[r] || 0) + 1;\n});\n\nconst kept = filtered.filter(i => i.json.keep).length;\n\nconst summary = {\n  run_at: new Date().toISOString(),\n  feeds_attempted: safeAll('Feed List').length,\n  raw_items: stats.raw ?? 0,\n  feed_errors: stats.feed_errors ?? 0,\n  missing_fields: stats.missing_fields ?? 0,\n  dropped_by_reason: dropReasons,\n  kept_after_filter: kept,\n  removed_in_run_duplicates: kept - afterInRun.length,\n  removed_cross_run_duplicates: afterInRun.length - finalItems.length,\n  new_articles: finalItems.length,\n  status: finalItems.length ? 'OK' : 'NO_NEW_ARTICLES',\n};\n\nreturn [{ json: { summary, articles: finalItems.map(i => i.json) } }];"
+            },
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                1632,
+                32
+            ],
+            "id": "5e6f1901-b293-452d-b2a7-51a46b5ac98e",
+            "name": "Collection Summary"
+        }
+    ],
+    "pinData": {},
+    "connections": {
+        "Schedule Trigger": {
+            "main": [
+                [
+                    {
+                        "node": "Feed List",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "When clicking ‘Execute workflow’": {
+            "main": [
+                [
+                    {
+                        "node": "Feed List",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Feed List": {
+            "main": [
+                [
+                    {
+                        "node": "RSS Read",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "RSS Read": {
+            "main": [
+                [
+                    {
+                        "node": "Normalize Articles",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Normalize Articles": {
+            "main": [
+                [
+                    {
+                        "node": "Filter Recent & Relevant",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Filter Recent & Relevant": {
+            "main": [
+                [
+                    {
+                        "node": "Keep Only Kept",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Keep Only Kept": {
+            "main": [
+                [
+                    {
+                        "node": "Dedup In-Run",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Dedup In-Run": {
+            "main": [
+                [
+                    {
+                        "node": "Remove Duplicates (Cross-Run)",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Remove Duplicates (Cross-Run)": {
+            "main": [
+                [
+                    {
+                        "node": "Collection Summary",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        }
+    },
+    "active": false,
+    "settings": {
+        "executionOrder": "v1",
+        "binaryMode": "separate",
+        "timeSavedMode": "fixed",
+        "callerPolicy": "workflowsFromSameOwner",
+        "availableInMCP": false
+    },
+    "versionId": "7bdf9028-a16a-48f0-bcc0-94dc282ffed9",
+    "meta": {
+        "instanceId": "5dcd35cbd7d40973a8328eb5eb263e076233b5830b385ab1ce52d72228817c3c"
+    },
+    "nodeGroups": [],
+    "id": "TRJZw8OaWxSXLiw6",
+    "tags": []
+}
